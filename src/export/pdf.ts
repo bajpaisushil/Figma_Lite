@@ -21,8 +21,8 @@
 
 import type { Document, NodeId, SceneNode, TextNode } from "../core/types.ts";
 import { isContainer } from "../core/types.ts";
-import { localTransform, worldTransform } from "../core/document.ts";
-import type { Rect } from "../core/math.ts";
+import { ancestorsOf, localTransform, worldTransform } from "../core/document.ts";
+import { type Mat, type Rect, apply } from "../core/math.ts";
 import { layoutText } from "../render/text.ts";
 import { ByteBuilder, dataUrlToBytes } from "./bytes.ts";
 import { num, parseColor } from "./color.ts";
@@ -167,6 +167,51 @@ function fitBox(
   const w = iw * scale;
   const h = ih * scale;
   return { x: (bw - w) / 2, y: (bh - h) / 2, w, h };
+}
+
+/**
+ * A rounded rectangle with every point pre-mapped through `m`.
+ *
+ * Clip paths cannot be wrapped in their own q/Q — the Q would discard the clip
+ * — and `cm` concatenates rather than replaces, so nesting transforms to place
+ * each clip would compound them. Mapping the points instead keeps the current
+ * transform untouched.
+ */
+function roundedRectThrough(ops: string[], w: number, h: number, radius: number, m: Mat): void {
+  const local: string[] = [];
+  roundedRect(local, w, h, radius);
+
+  for (const op of local) {
+    const parts = op.split(" ");
+    const verb = parts[parts.length - 1]!;
+    const values = parts.slice(0, -1).map(Number);
+
+    if (verb === "h") {
+      ops.push("h");
+      continue;
+    }
+    if (verb === "re") {
+      // Emit the axis-aligned rectangle as an explicit mapped quad instead.
+      const [x, y, rw, rh] = values as [number, number, number, number];
+      const corners = [
+        { x, y },
+        { x: x + rw, y },
+        { x: x + rw, y: y + rh },
+        { x, y: y + rh },
+      ].map((p) => apply(m, p));
+      ops.push(`${num(corners[0]!.x)} ${num(corners[0]!.y)} m`);
+      for (const c of corners.slice(1)) ops.push(`${num(c.x)} ${num(c.y)} l`);
+      ops.push("h");
+      continue;
+    }
+
+    const mapped: string[] = [];
+    for (let i = 0; i < values.length; i += 2) {
+      const p = apply(m, { x: values[i]!, y: values[i + 1]! });
+      mapped.push(num(p.x), num(p.y));
+    }
+    ops.push(`${mapped.join(" ")} ${verb}`);
+  }
 }
 
 function ellipsePath(ops: string[], w: number, h: number): void {
@@ -428,6 +473,24 @@ export async function exportPdf(doc: Document, options: PdfExportOptions): Promi
     if (parentId && parentId !== doc.root) {
       const pw = worldTransform(doc, parentId);
       ops.push("q");
+
+      // Re-establish any enclosing clipping frames, outermost first, so a node
+      // that is half-hidden on the canvas does not export whole. These are
+      // emitted in page space, leaving the transform free for `pw` below.
+      const clipping = ancestorsOf(doc, id)
+        .filter((n) => n.id !== doc.root && n.type === "frame" && n.clip)
+        .reverse();
+      for (const frame of clipping) {
+        roundedRectThrough(
+          ops,
+          frame.w,
+          frame.h,
+          (frame as { radius: number }).radius,
+          worldTransform(doc, frame.id),
+        );
+        ops.push("W n");
+      }
+
       ops.push(`${num(pw.a)} ${num(pw.b)} ${num(pw.c)} ${num(pw.d)} ${num(pw.e)} ${num(pw.f)} cm`);
       emit(id, 1);
       ops.push("Q");

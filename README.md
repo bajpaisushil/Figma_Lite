@@ -10,9 +10,9 @@ dependencies.
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm test           # 162 unit tests, straight against the TS sources
+npm test           # 167 unit tests, straight against the TS sources
 npm run check      # typecheck + unit tests + production build
-npm run test:e2e   # 35 checks driving a real browser (needs `npx playwright install chromium`)
+npm run test:e2e   # 38 checks driving a real browser (needs `npx playwright install chromium`)
 ```
 
 ---
@@ -196,6 +196,10 @@ text matrix. Known limits: fonts are the standard 14, so custom families are
 substituted, and embedded images are re-encoded to JPEG, so transparency
 composites onto white.
 
+**Not implemented:** PDF *import*. Turning a PDF back into editable vectors
+needs a full PDF parser, which is a larger project than this editor. PNG and JPG
+import fine, as image layers.
+
 ![The storage panel](docs/storage.png)
 
 ### How persistence works
@@ -207,6 +211,7 @@ composites onto white.
 | **What does not** | Undo history, selection, zoom and pan, active tool. Restoring an undo stack that no longer matches what you remember doing is worse than starting clean. |
 | **Capacity** | IndexedDB is disk-backed — typically a large fraction of free space, versus localStorage's hard ~5 MB origin cap. Since images are inlined as base64 `data:` URLs (+33%), two pasted screenshots would have exceeded the old cap on their own. |
 | **Cost per save** | Only the nodes that changed are written. `diffDocuments` — the same reference comparison the undo system is built on — yields the changed set, so autosaving a 5,000-node document costs the same as a 5-node one. localStorage could not use that information: it can only replace the whole value, so every save re-serialised everything on the main thread. |
+| **Multiple tabs** | Tabs tell each other what they did over `BroadcastChannel`. A design you have open and have not touched reloads when another tab saves it; if you have unsaved edits you are told yours will win rather than having either side silently discarded. This is a notification channel, not a merge protocol — operational transforms for a local-first design tool is a different project. |
 | **Visibility** | The document chip in the toolbar opens a storage panel: real usage from `navigator.storage.estimate()`, every saved design with its size, and delete / clear-all. Browser storage is invisible by default; this app does not get to quietly hold your disk. |
 
 Clearing site data returns you to the starter scene. Both behaviours are covered
@@ -230,7 +235,7 @@ shortcut table itself, so a shortcut cannot exist without being documented.
 
 ## Testing
 
-162 tests, run with Node's built-in runner against the TypeScript sources
+167 tests, run with Node's built-in runner against the TypeScript sources
 directly (no build step):
 
 | file | covers |
@@ -243,6 +248,7 @@ directly (no build step):
 | `hittest.test.ts` | rotated shapes, clipping, scoping, SAT marquee |
 | `snapping.test.ts` | edge/centre snapping, zoom-relative tolerance |
 | `storage.test.ts` | incremental write plans, size accounting, the v1→v2 schema upgrade, backend fallbacks |
+| `sync.test.ts` | cross-tab messaging, self-message suppression, graceful absence |
 
 `test/e2e.mjs` drives the production build in headless Chromium: it asserts the
 app boots with no console errors, that the canvas actually paints pixels, that

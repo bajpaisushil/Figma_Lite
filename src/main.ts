@@ -16,6 +16,7 @@ import { Editor } from "./core/editor.ts";
 import { deepWorldBounds, emptyDocument } from "./core/document.ts";
 import { fromJSON, toJSON, ImportError } from "./core/serialize.ts";
 import { type DocumentLibrary, openLibrary, uniqueName } from "./core/storage.ts";
+import { LibrarySync } from "./core/sync.ts";
 import { SceneRenderer } from "./render/renderer.ts";
 import { OverlayRenderer } from "./render/overlay.ts";
 import { InteractionEngine } from "./interaction/tools.ts";
@@ -45,6 +46,13 @@ async function boot(): Promise<void> {
   let library: DocumentLibrary | null = null;
   let activeId: string | null = null;
   let currentName = "Untitled";
+  /** True between a document change and the save that persists it. */
+  let unsaved = false;
+
+  // Another tab shares this origin's IndexedDB. The storage layer already
+  // refuses to write a corrupt document, but last-write-wins is still
+  // surprising if nobody mentions it — so tabs tell each other what they did.
+  const sync = new LibrarySync((message) => void onRemoteChange(message));
 
   // --- DOM scaffold ---------------------------------------------------------
   const sceneCanvas = el("canvas", { class: "scene-canvas" });
@@ -423,6 +431,7 @@ async function boot(): Promise<void> {
 
   function queueAutosave(): void {
     if (!library || !activeId) return;
+    unsaved = true;
     clearTimeout(autosaveTimer);
     autosaveTimer = setTimeout(() => void saveNow(), AUTOSAVE_DEBOUNCE_MS) as unknown as number;
   }
@@ -431,8 +440,11 @@ async function boot(): Promise<void> {
     clearTimeout(autosaveTimer);
     if (!library || !activeId) return;
     try {
-      await library.save(activeId, editor.doc);
+      const savedId = activeId;
+      await library.save(savedId, editor.doc);
+      unsaved = false;
       autosaveWarned = false;
+      sync.post("saved", savedId);
       if (libraryPanel.isOpen) await refreshLibrary();
     } catch {
       // Quota exhaustion or a storage failure. Dropping this silently would let
@@ -448,6 +460,38 @@ async function boot(): Promise<void> {
     if (!library) return;
     const [documents, usage] = await Promise.all([library.list(), library.estimate()]);
     libraryPanel.render(documents, activeId, usage, Date.now());
+  }
+
+  /**
+   * Reacts to another tab. A document we have open and have not touched is
+   * simply reloaded; if we have unsaved edits we say so rather than silently
+   * discarding either side.
+   */
+  async function onRemoteChange(message: { kind: string; docId?: string }): Promise<void> {
+    if (!library) return;
+
+    if (message.kind === "deleted" && message.docId === activeId) {
+      toasts.show("This design was deleted in another tab", "warn", 5000);
+      activeId = null;
+      const remaining = await library.list();
+      if (remaining[0]) await openDocument(remaining[0].id);
+      else await createDocument(true);
+      return;
+    }
+
+    if (message.kind === "saved" && message.docId === activeId) {
+      if (unsaved) {
+        toasts.show("Changed in another tab — your version will win on save", "warn", 6000);
+      } else {
+        const fresh = await library.load(activeId);
+        if (fresh) {
+          editor.load(fresh);
+          engine.syncScope();
+          toasts.show("Updated from another tab");
+        }
+      }
+    }
+    if (libraryPanel.isOpen) await refreshLibrary();
   }
 
   async function showLibrary(): Promise<void> {
@@ -487,6 +531,7 @@ async function boot(): Promise<void> {
     );
     activeId = summary.id;
     await library.setActiveId(summary.id);
+    sync.post("library", summary.id);
 
     // Read back rather than reusing the in-memory document, so the library's
     // diff base and the editor's document are the same object.
@@ -500,6 +545,7 @@ async function boot(): Promise<void> {
   async function renameDocument(id: string, name: string): Promise<void> {
     if (!library) return;
     await library.rename(id, name);
+    sync.post("library", id);
     if (id === activeId) await syncDocumentName();
     await refreshLibrary();
   }
@@ -507,6 +553,7 @@ async function boot(): Promise<void> {
   async function removeDocument(id: string): Promise<void> {
     if (!library) return;
     await library.remove(id);
+    sync.post("deleted", id);
 
     if (id !== activeId) {
       await refreshLibrary();
@@ -523,6 +570,7 @@ async function boot(): Promise<void> {
     if (!library) return;
     clearTimeout(autosaveTimer);
     await library.clearAll();
+    sync.post("library");
     activeId = null;
     await createDocument(true);
     toasts.show("Cleared all saved data");
@@ -588,6 +636,7 @@ async function boot(): Promise<void> {
       activeDocumentId: () => activeId,
       clearStorage: () => library?.clearAll(),
       saveNow: () => saveNow(),
+      syncActive: () => sync.isActive,
     },
   });
 }

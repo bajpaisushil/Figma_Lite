@@ -51,7 +51,10 @@ let browser;
 try {
   await waitForServer(URL);
   browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  // One context, so a second page shares IndexedDB and BroadcastChannel with
+  // the first — which is exactly what the cross-tab check needs.
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
 
   const consoleErrors = [];
   page.on("console", (msg) => {
@@ -663,6 +666,88 @@ try {
     await page.waitForTimeout(400);
     const count = await page.evaluate(() => Object.keys(window.editor.doc.nodes).length);
     assert.equal(count, 15, "the starter scene is back");
+  });
+
+  console.log("\nimages and tabs");
+
+  // A 1x1 red PNG, small enough to inline.
+  const TINY_PNG = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  );
+
+  await check("importing an image file creates an image node", async () => {
+    const before = await page.evaluate(
+      () => Object.values(window.editor.doc.nodes).filter((n) => n.type === "image").length,
+    );
+
+    await page.setInputFiles('input[accept="image/*"]', {
+      name: "dot.png",
+      mimeType: "image/png",
+      buffer: TINY_PNG,
+    });
+    await page.waitForTimeout(700);
+
+    const after = await page.evaluate(() => {
+      const images = Object.values(window.editor.doc.nodes).filter((n) => n.type === "image");
+      return { count: images.length, src: images[images.length - 1]?.src?.slice(0, 15) ?? "" };
+    });
+    assert.equal(after.count, before + 1, "one image node added");
+    assert.ok(after.src.startsWith("data:image"), `stored as a data URL (${after.src})`);
+  });
+
+  await check("an imported image survives a refresh", async () => {
+    await page.evaluate(() => window.debug.saveNow());
+    await page.waitForTimeout(400);
+    await page.reload({ waitUntil: "networkidle" });
+    await ready();
+    await page.waitForTimeout(400);
+
+    const count = await page.evaluate(
+      () => Object.values(window.editor.doc.nodes).filter((n) => n.type === "image").length,
+    );
+    assert.ok(count > 0, "the image came back from storage");
+  });
+
+  await check("a second tab picks up changes made in the first", async () => {
+    assert.ok(await page.evaluate(() => window.debug.syncActive()), "BroadcastChannel is available");
+
+    const second = await context.newPage();
+    await second.goto(URL, { waitUntil: "networkidle" });
+    await second.waitForFunction(() => Boolean(window.editor), null, { timeout: 15000 });
+    await second.waitForTimeout(500);
+
+    // Both tabs should have opened the same active design.
+    const sameDoc = await second.evaluate(() => window.debug.activeDocumentId());
+    const firstDoc = await page.evaluate(() => window.debug.activeDocumentId());
+    assert.equal(sameDoc, firstDoc, "both tabs opened the same design");
+
+    const before = await second.evaluate(() => Object.keys(window.editor.doc.nodes).length);
+
+    // Tab one adds a node and saves; tab two should reload it.
+    await page.evaluate(() => {
+      const { insertNode } = window.debug.commands;
+      window.editor.commit("Remote add", (doc) =>
+        insertNode(doc, {
+          id: "from-tab-one",
+          type: "rect",
+          name: "From tab one",
+          parent: null,
+          x: 10, y: 10, w: 40, h: 40,
+          rotation: 0, opacity: 1, visible: true, locked: false,
+          radius: 0, strokeWidth: 0, fill: { color: "#ff0000" },
+        }),
+      );
+    });
+    await page.evaluate(() => window.debug.saveNow());
+    await second.waitForTimeout(1200);
+
+    const after = await second.evaluate(() => ({
+      count: Object.keys(window.editor.doc.nodes).length,
+      hasNode: Boolean(window.editor.doc.nodes["from-tab-one"]),
+    }));
+    assert.ok(after.hasNode, `the second tab sees the new node (${before} -> ${after.count})`);
+    await second.close();
   });
 
   console.log("\nresponsive");

@@ -16,7 +16,7 @@
 
 import type { Document, NodeId, SceneNode } from "../core/types.ts";
 import { isContainer } from "../core/types.ts";
-import { localTransform, worldTransform } from "../core/document.ts";
+import { ancestorsOf, localTransform, worldTransform } from "../core/document.ts";
 import { type Mat, type Rect, IDENTITY, mul, rectIntersects, transformedBounds } from "../core/math.ts";
 import { type Viewport, viewMatrix, visibleWorldRect } from "../core/viewport.ts";
 import { ImageCache } from "./images.ts";
@@ -80,7 +80,13 @@ export class SceneRenderer {
         if (!node) continue;
         const parentWorld =
           node.parent && node.parent !== doc.root ? worldTransform(doc, node.parent) : IDENTITY;
+
+        // Painting a subtree directly skips the ancestors, and with them any
+        // clipping frame the node sits inside — so a half-hidden node would
+        // export whole. Re-establish those clips before painting.
+        const clips = this.applyAncestorClips(doc, id, view);
         this.paintNode(doc, id, parentWorld, view, visible, 1);
+        for (let i = 0; i < clips; i++) this.ctx.restore();
       }
     } else {
       const root = doc.nodes[doc.root];
@@ -173,6 +179,25 @@ export class SceneRenderer {
     }
 
     ctx.restore();
+  }
+
+  /**
+   * Installs each enclosing clipping frame's clip path, outermost first.
+   * Returns how many `save()` calls the caller must unwind.
+   */
+  private applyAncestorClips(doc: Document, id: NodeId, view: Mat): number {
+    const chain = ancestorsOf(doc, id)
+      .filter((n) => n.id !== doc.root && n.type === "frame" && n.clip)
+      .reverse();
+
+    for (const frame of chain) {
+      this.ctx.save();
+      this.setWorldTransform(mul(view, worldTransform(doc, frame.id)));
+      this.ctx.beginPath();
+      roundedRectPath(this.ctx, 0, 0, frame.w, frame.h, (frame as { radius: number }).radius);
+      this.ctx.clip();
+    }
+    return chain.length;
   }
 
   /** Installs a world→device transform, folding in the device pixel ratio. */
