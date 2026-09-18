@@ -148,20 +148,52 @@ button {
   box-shadow: 0 4px 12px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.55);
 }
 
-.brand-text {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.15;
+/* The document chip: the file you are in, and the way into everything saved. */
+.doc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  max-width: 200px;
+  padding: 0 10px 0 11px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(180deg, #ffffff 0%, #f7f4ff 100%);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm), var(--jelly);
+  transition: transform 0.22s var(--spring), box-shadow 0.18s var(--ease);
 }
 
-.brand-text strong {
-  font-size: 14px;
-  letter-spacing: -0.01em;
+.doc-chip .icon {
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+  flex: none;
 }
 
-.brand-sub {
-  font-size: 10.5px;
-  color: var(--ink-faint);
+.doc-chip:hover {
+  transform: translateY(-1.5px);
+  box-shadow: var(--shadow-md), var(--jelly);
+}
+
+.doc-chip:active {
+  transform: translateY(1px) scale(0.96);
+  box-shadow: var(--shadow-press);
+}
+
+.doc-name {
+  font-size: 12.5px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-caret {
+  transform: rotate(90deg);
+  opacity: 0.5;
+  width: 13px !important;
+  height: 13px !important;
 }
 
 .tool-group {
@@ -998,6 +1030,21 @@ button {
   transform: translateY(0) scale(1);
 }
 
+/* Chrome text is not content: selecting it only gets in the way of the
+   double-click-to-rename gesture. Inputs opt back in below. */
+.modal-title,
+.library-row,
+.meter-label,
+.help-row,
+.library-head {
+  user-select: none;
+}
+
+.library-rename,
+.layer-rename {
+  user-select: text;
+}
+
 .modal-head {
   display: flex;
   align-items: center;
@@ -1063,8 +1110,8 @@ button {
   .workspace {
     grid-template-columns: 210px minmax(0, 1fr) 240px;
   }
-  .brand-text {
-    display: none;
+  .doc-chip {
+    max-width: 130px;
   }
 }
 
@@ -1075,7 +1122,9 @@ button {
   .panel {
     display: none;
   }
-  .brand,
+  /* The brand mark can go; the document chip cannot — it is the only route to
+     saved designs and storage. */
+  .brand-mark,
   .zoom-cluster .ghost-button {
     display: none;
   }
@@ -1090,5 +1139,194 @@ button {
   *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* --- Storage panel -------------------------------------------------------- */
+
+.modal-narrow {
+  width: min(460px, 100%);
+}
+
+.meter {
+  margin-bottom: 20px;
+}
+
+.meter-track {
+  height: 12px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+  box-shadow: inset 0 1px 3px rgba(72, 52, 140, 0.13);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, #8f81ff 0%, var(--accent) 60%, #b98cff 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  /* Grows rather than jumps when a save lands. */
+  transition: width 0.55s var(--ease), background 0.3s var(--ease);
+}
+
+.meter-fill.is-full {
+  background: linear-gradient(90deg, #ff9ec4 0%, #ff6ea8 100%);
+}
+
+.meter-label {
+  margin: 9px 2px 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.library-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.library-head .section-title {
+  margin: 0;
+}
+
+.library-head .pill-button {
+  flex: none;
+}
+
+.library-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 42vh;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.library-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-sunken);
+  cursor: pointer;
+  transition: transform 0.2s var(--spring), box-shadow 0.18s var(--ease), background 0.18s var(--ease);
+}
+
+.library-row:hover {
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.library-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.library-row.is-active {
+  background: linear-gradient(160deg, #f2efff 0%, var(--accent-tint) 100%);
+  box-shadow: inset 0 0 0 1.5px rgba(123, 108, 255, 0.35);
+  cursor: default;
+}
+
+.library-dot {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: #d8d2f0;
+}
+
+.library-row.is-active .library-dot {
+  background: linear-gradient(160deg, #9a8bff, var(--accent));
+  box-shadow: 0 0 0 3px rgba(123, 108, 255, 0.18);
+}
+
+.library-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.library-name {
+  font-size: 12.5px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.library-meta {
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.library-size {
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  flex: none;
+}
+
+.library-rename {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  box-shadow: 0 0 0 2px var(--accent);
+  outline: none;
+}
+
+.library-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+/* Destructive actions confirm in place: a second click on the same control. */
+.danger {
+  color: #c2537f;
+}
+
+.icon-button.danger:hover:not(:disabled) {
+  color: #a83b6a;
+  background: #ffeef4;
+}
+
+.ghost-button.danger:hover {
+  color: #a83b6a;
+  background: #ffeef4;
+}
+
+.is-confirming {
+  color: #fff !important;
+  background: linear-gradient(160deg, #ff8fb6 0%, #f2547f 100%) !important;
+  box-shadow: 0 3px 10px rgba(226, 88, 133, 0.4) !important;
+  animation: confirm-pulse 0.4s var(--spring);
+}
+
+@keyframes confirm-pulse {
+  0% {
+    transform: scale(0.86);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
   }
 }

@@ -13,9 +13,9 @@
 import "./styles.css";
 
 import { Editor } from "./core/editor.ts";
-import { deepWorldBounds } from "./core/document.ts";
+import { deepWorldBounds, emptyDocument } from "./core/document.ts";
 import { fromJSON, toJSON, ImportError } from "./core/serialize.ts";
-import { type DocumentStore, openDocumentStore } from "./core/storage.ts";
+import { type DocumentLibrary, openLibrary, uniqueName } from "./core/storage.ts";
 import { SceneRenderer } from "./render/renderer.ts";
 import { OverlayRenderer } from "./render/overlay.ts";
 import { InteractionEngine } from "./interaction/tools.ts";
@@ -28,6 +28,7 @@ import { PropertiesPanel } from "./ui/properties.ts";
 import { Toolbar } from "./ui/toolbar.ts";
 import { Toasts } from "./ui/toast.ts";
 import { HelpSheet } from "./ui/help.ts";
+import { LibraryPanel } from "./ui/library.ts";
 import { TextEditor } from "./ui/textEditor.ts";
 import { el } from "./ui/dom.ts";
 import { sampleDocument } from "./sample.ts";
@@ -37,9 +38,10 @@ const AUTOSAVE_DEBOUNCE_MS = 800;
 
 async function boot(): Promise<void> {
   const editor = new Editor();
-  // Assigned once the async store is open; everything that touches it is
+  // Assigned once the async library is open; everything that touches it is
   // either scheduled after that point or guards on null.
-  let store: DocumentStore | null = null;
+  let library: DocumentLibrary | null = null;
+  let activeId: string | null = null;
 
   // --- DOM scaffold ---------------------------------------------------------
   const sceneCanvas = el("canvas", { class: "scene-canvas" });
@@ -93,9 +95,23 @@ async function boot(): Promise<void> {
     toast: (message) => toasts.show(message),
   });
 
+  const libraryPanel = new LibraryPanel({
+    open: (id) => void openDocument(id),
+    create: () => void createDocument(),
+    rename: (id, name) => void renameDocument(id, name),
+    remove: (id) => void removeDocument(id),
+    clearAll: () => void clearLibrary(),
+  });
+
   const layers = new LayersPanel(editor, engine);
   const properties = new PropertiesPanel(editor, context);
-  const toolbar = new Toolbar(editor, context, () => help.toggle(), () => imageInput.click());
+  const toolbar = new Toolbar(
+    editor,
+    context,
+    () => help.toggle(),
+    () => imageInput.click(),
+    () => void showLibrary(),
+  );
   layers.bindEvents();
 
   document.body.append(
@@ -104,6 +120,7 @@ async function boot(): Promise<void> {
       el("main", { class: "workspace" }, [layers.root, canvasHost, properties.root]),
       toasts.root,
       help.root,
+      libraryPanel.root,
       fileInput,
       imageInput,
     ]),
@@ -157,7 +174,7 @@ async function boot(): Promise<void> {
       `${Math.round(editor.viewport.zoom * 100)}%`,
       count === 0 ? "no selection" : count === 1 ? "1 selected" : `${count} selected`,
       `${painted} painted · ${culled} culled · ${frameMs.toFixed(1)}ms`,
-      store ? STORE_LABEL[store.kind] : "storage…",
+      library ? STORE_LABEL[library.kind] : "storage…",
     ].join("   ·   ");
   }
 
@@ -250,6 +267,10 @@ async function boot(): Promise<void> {
   // --- Keyboard -------------------------------------------------------------
 
   window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && libraryPanel.isOpen) {
+      libraryPanel.hide();
+      return;
+    }
     if (event.key === "Escape" && help.isOpen) {
       help.hide();
       return;
@@ -368,58 +389,160 @@ async function boot(): Promise<void> {
     }
   });
 
-  // --- Autosave -------------------------------------------------------------
+  // --- Autosave and the document library -----------------------------------
 
-  // The document is written to IndexedDB shortly after the last change, and
-  // read back on boot. History, selection and viewport are deliberately not
-  // persisted: restoring an undo stack that no longer matches what the user
-  // remembers doing is worse than starting clean.
+  // The active document is written to IndexedDB shortly after the last change.
+  // History, selection and viewport are deliberately not persisted: restoring
+  // an undo stack that no longer matches what the user remembers doing is worse
+  // than starting clean.
   //
-  // The store writes only the nodes that changed since its last successful
-  // save, so autosaving during a 5,000-node document costs the same as during
-  // a 5-node one.
+  // The library writes only the nodes that changed since its last successful
+  // save, so autosaving a 5,000-node document costs the same as a 5-node one.
   let autosaveTimer: number | undefined;
   let autosaveWarned = false;
 
   function queueAutosave(): void {
-    if (!store) return;
+    if (!library || !activeId) return;
     clearTimeout(autosaveTimer);
-    autosaveTimer = setTimeout(() => {
-      void store?.save(editor.doc).then(
-        () => {
-          autosaveWarned = false;
-        },
-        () => {
-          // Quota exhaustion or a storage failure. Dropping this silently would
-          // let someone work for an hour and lose it on refresh, so say so once
-          // and point at the export, which has no size limit.
-          if (autosaveWarned) return;
-          autosaveWarned = true;
-          toasts.show("Could not autosave — export to JSON to keep this work", "warn", 6000);
-        },
-      );
-    }, AUTOSAVE_DEBOUNCE_MS) as unknown as number;
+    autosaveTimer = setTimeout(() => void saveNow(), AUTOSAVE_DEBOUNCE_MS) as unknown as number;
+  }
+
+  async function saveNow(): Promise<void> {
+    clearTimeout(autosaveTimer);
+    if (!library || !activeId) return;
+    try {
+      await library.save(activeId, editor.doc);
+      autosaveWarned = false;
+      if (libraryPanel.isOpen) await refreshLibrary();
+    } catch {
+      // Quota exhaustion or a storage failure. Dropping this silently would let
+      // someone work for an hour and lose it on refresh, so say so once and
+      // point at the export, which has no size limit.
+      if (autosaveWarned) return;
+      autosaveWarned = true;
+      toasts.show("Could not autosave — export to JSON to keep this work", "warn", 6000);
+    }
+  }
+
+  async function refreshLibrary(): Promise<void> {
+    if (!library) return;
+    const [documents, usage] = await Promise.all([library.list(), library.estimate()]);
+    libraryPanel.render(documents, activeId, usage, Date.now());
+  }
+
+  async function showLibrary(): Promise<void> {
+    await saveNow();
+    await refreshLibrary();
+    libraryPanel.show();
+  }
+
+  /** Loads a saved design, after flushing whatever is on screen right now. */
+  async function openDocument(id: string): Promise<void> {
+    if (!library || id === activeId) return;
+    await saveNow();
+
+    const doc = await library.load(id);
+    if (!doc) {
+      toasts.show("That design could not be opened", "warn");
+      return;
+    }
+    activeId = id;
+    await library.setActiveId(id);
+
+    editor.load(doc);
+    engine.syncScope();
+    editor.zoomToFit();
+    await syncDocumentName();
+    await refreshLibrary();
+  }
+
+  async function createDocument(fromSample = false): Promise<void> {
+    if (!library) return;
+    await saveNow();
+
+    const existing = await library.list();
+    const summary = await library.create(
+      uniqueName("Untitled", existing.map((d) => d.name)),
+      fromSample ? sampleDocument() : emptyDocument(),
+    );
+    activeId = summary.id;
+    await library.setActiveId(summary.id);
+
+    // Read back rather than reusing the in-memory document, so the library's
+    // diff base and the editor's document are the same object.
+    editor.load((await library.load(summary.id)) ?? emptyDocument());
+    engine.syncScope();
+    editor.zoomToFit();
+    await syncDocumentName();
+    await refreshLibrary();
+  }
+
+  async function renameDocument(id: string, name: string): Promise<void> {
+    if (!library) return;
+    await library.rename(id, name);
+    if (id === activeId) await syncDocumentName();
+    await refreshLibrary();
+  }
+
+  async function removeDocument(id: string): Promise<void> {
+    if (!library) return;
+    await library.remove(id);
+
+    if (id !== activeId) {
+      await refreshLibrary();
+      return;
+    }
+    // The open design was deleted: fall through to the next one, or start over.
+    activeId = null;
+    const remaining = await library.list();
+    if (remaining[0]) await openDocument(remaining[0].id);
+    else await createDocument(true);
+  }
+
+  async function clearLibrary(): Promise<void> {
+    if (!library) return;
+    clearTimeout(autosaveTimer);
+    await library.clearAll();
+    activeId = null;
+    await createDocument(true);
+    toasts.show("Cleared all saved data");
+  }
+
+  async function syncDocumentName(): Promise<void> {
+    if (!library || !activeId) return;
+    const summary = (await library.list()).find((d) => d.id === activeId);
+    toolbar.setDocumentName(summary?.name ?? "Untitled");
   }
 
   // --- Start ----------------------------------------------------------------
 
   // The shell is already on screen; the document arrives a frame later. Opening
-  // the store is async, which is the one real cost of leaving localStorage —
+  // the library is async, which is the one real cost of leaving localStorage —
   // and it buys a quota measured in gigabytes instead of five megabytes.
-  const opened = await openDocumentStore();
-  store = opened.store;
+  const opened = await openLibrary();
+  library = opened.library;
 
-  let restored: Awaited<ReturnType<DocumentStore["load"]>> = null;
-  try {
-    restored = await store.load();
-  } catch {
-    restored = null;
+  const summaries = await library.list();
+  const storedActive = await library.activeId();
+  const startId = summaries.some((d) => d.id === storedActive) ? storedActive : summaries[0]?.id ?? null;
+
+  if (startId) {
+    const doc = await library.load(startId);
+    if (doc) {
+      activeId = startId;
+      editor.load(doc);
+      await library.setActiveId(startId);
+      await syncDocumentName();
+    }
+  }
+  if (!activeId) {
+    // First run, or every design was deleted: open the starter scene.
+    await createDocument(true);
   }
 
-  editor.load(restored ?? sampleDocument());
   if (opened.migrated) toasts.show("Moved your saved work into IndexedDB");
-  if (store.kind !== "indexeddb") {
-    toasts.show("IndexedDB unavailable — autosave is limited", "warn", 5000);
+  if (library.kind !== "indexeddb") {
+    toasts.show("IndexedDB unavailable — storage is limited", "warn", 5000);
   }
 
   resize();
@@ -436,10 +559,13 @@ async function boot(): Promise<void> {
     debug: {
       deepWorldBounds,
       toJSON: () => toJSON(editor.doc),
-      storageKind: () => store?.kind ?? null,
+      storageKind: () => library?.kind ?? null,
       commands: { insertNode },
-      estimate: () => store?.estimate() ?? null,
-      clearStorage: () => store?.clear(),
+      estimate: () => library?.estimate() ?? null,
+      listDocuments: () => library?.list() ?? Promise.resolve([]),
+      activeDocumentId: () => activeId,
+      clearStorage: () => library?.clearAll(),
+      saveNow: () => saveNow(),
     },
   });
 }

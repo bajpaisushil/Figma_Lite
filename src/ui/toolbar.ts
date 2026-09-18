@@ -30,6 +30,8 @@ const TOOLS: ToolSpec[] = [
 export class Toolbar {
   readonly root: HTMLElement;
   private toolButtons = new Map<ToolId, HTMLButtonElement>();
+  private documentChip!: HTMLButtonElement;
+  private documentLabel!: HTMLElement;
   private undoButton!: HTMLButtonElement;
   private redoButton!: HTMLButtonElement;
   private zoomReadout!: HTMLButtonElement;
@@ -40,6 +42,7 @@ export class Toolbar {
     private readonly ctx: () => ActionContext,
     private readonly onShowHelp: () => void,
     private readonly onPickImage: () => void,
+    private readonly onShowLibrary: () => void,
   ) {
     this.root = el("header", { class: "toolbar" }, [
       this.brand(),
@@ -49,13 +52,26 @@ export class Toolbar {
   }
 
   private brand(): HTMLElement {
+    // The document chip doubles as the entry point to the storage panel: the
+    // name you are editing, and one click to everything else you have saved.
+    this.documentLabel = el("span", { class: "doc-name", text: "Untitled" });
+    this.documentChip = el("button", {
+      class: "doc-chip",
+      title: "Saved designs and storage",
+      "aria-label": "Saved designs and storage",
+    });
+    this.documentChip.append(icon(ICONS.files), this.documentLabel, icon(ICONS.chevron, "doc-caret"));
+    this.documentChip.addEventListener("click", this.onShowLibrary);
+
     return el("div", { class: "brand" }, [
       el("div", { class: "brand-mark" }, [el("span", { text: "◆" })]),
-      el("div", { class: "brand-text" }, [
-        el("strong", { text: "Figma-lite" }),
-        el("span", { class: "brand-sub", text: "canvas editor" }),
-      ]),
+      this.documentChip,
     ]);
+  }
+
+  setDocumentName(name: string): void {
+    this.documentLabel.textContent = name;
+    this.documentChip.title = `${name} — saved designs and storage`;
   }
 
   private toolGroup(): HTMLElement {

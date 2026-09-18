@@ -85,6 +85,8 @@ export const ICONS = {
   distributeV: '<path d="M4 4h16M4 20h16"/><rect x="8" y="9" width="8" height="6" rx="2"/>',
   front: '<rect x="3" y="3" width="12" height="12" rx="3"/><path d="M9 21h9a3 3 0 003-3V9"/>',
   back: '<rect x="9" y="9" width="12" height="12" rx="3"/><path d="M15 3H6a3 3 0 00-3 3v9"/>',
+  files: '<rect x="3" y="7" width="13" height="14" rx="3"/><path d="M8 4h9a4 4 0 014 4v9"/>',
+  database: '<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
   rotate: '<path d="M20.5 12a8.5 8.5 0 11-2.6-6.1"/><path d="M20.5 3.5v5h-5"/>',
   radius: '<path d="M4 20V11a7 7 0 017-7h9"/><circle cx="4" cy="20" r="1.1" fill="currentColor" stroke="none"/><circle cx="20" cy="4" r="1.1" fill="currentColor" stroke="none"/>',
 } as const;
