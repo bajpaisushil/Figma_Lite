@@ -16,7 +16,7 @@
 
 import type { Document, NodeId, SceneNode } from "../core/types.ts";
 import { isContainer } from "../core/types.ts";
-import { localTransform } from "../core/document.ts";
+import { localTransform, worldTransform } from "../core/document.ts";
 import { type Mat, type Rect, IDENTITY, mul, rectIntersects, transformedBounds } from "../core/math.ts";
 import { type Viewport, viewMatrix, visibleWorldRect } from "../core/viewport.ts";
 import { ImageCache } from "./images.ts";
@@ -53,7 +53,12 @@ export class SceneRenderer {
     this.canvas.style.height = `${height}px`;
   }
 
-  render(doc: Document, viewport: Viewport): RenderStats {
+  /**
+   * Paints the document. `roots` limits painting to specific subtrees — used by
+   * selection-only export; each root still gets its real parent transform, so a
+   * nested node exports exactly where it sits.
+   */
+  render(doc: Document, viewport: Viewport, roots?: readonly NodeId[]): RenderStats {
     const start = performance.now();
     const ctx = this.ctx;
     this.stats.painted = 0;
@@ -65,10 +70,20 @@ export class SceneRenderer {
     const visible = visibleWorldRect(viewport);
     const view = viewMatrix(viewport);
 
-    const root = doc.nodes[doc.root];
-    if (root && isContainer(root)) {
-      for (const childId of root.children) {
-        this.paintNode(doc, childId, IDENTITY, view, visible, 1);
+    if (roots) {
+      for (const id of roots) {
+        const node = doc.nodes[id];
+        if (!node) continue;
+        const parentWorld =
+          node.parent && node.parent !== doc.root ? worldTransform(doc, node.parent) : IDENTITY;
+        this.paintNode(doc, id, parentWorld, view, visible, 1);
+      }
+    } else {
+      const root = doc.nodes[doc.root];
+      if (root && isContainer(root)) {
+        for (const childId of root.children) {
+          this.paintNode(doc, childId, IDENTITY, view, visible, 1);
+        }
       }
     }
 

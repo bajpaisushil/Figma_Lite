@@ -10,9 +10,9 @@ dependencies.
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm test           # 121 unit tests, straight against the TS sources
+npm test           # 183 unit tests, straight against the TS sources
 npm run check      # typecheck + unit tests + production build
-npm run test:e2e   # 17 checks driving a real browser (needs `npx playwright install chromium`)
+npm run test:e2e   # 25 checks driving a real browser (needs `npx playwright install chromium`)
 ```
 
 ---
@@ -175,7 +175,24 @@ visibility and lock, rename in place.
 image drop and paste, an inspector with live numeric fields.
 
 **Document** — undo/redo, copy/cut/paste/duplicate (via a JSON payload, so it
-crosses tabs), JSON import/export, autosave.
+crosses tabs), a library of saved designs, autosave.
+
+**Export** — PNG and JPG at 1–4×, whole page or selection only; JSON to reopen
+here; and PDF.
+
+### PDF is real vectors
+
+The PDF writer is hand-rolled (`src/export/pdf.ts`, no dependency). Shapes
+become PDF path operators and text becomes text, so output scales without
+pixelating, prints properly, and stays selectable and searchable — the sample
+scene is ~20 KB. A PDF that is merely a wrapped bitmap would be a worse PNG.
+
+Two coordinate quirks drive most of that file: PDF's origin is bottom-left with
+Y up, so the page opens with a flip and node transforms emit unchanged; and
+glyphs under that flip would be upside down, so each text run re-flips via its
+text matrix. Known limits: fonts are the standard 14, so custom families are
+substituted, and embedded images are re-encoded to JPEG, so transparency
+composites onto white.
 
 ### How persistence works
 
@@ -184,7 +201,9 @@ crosses tabs), JSON import/export, autosave.
 | **Autosave** | The whole document is serialised to `localStorage` under `figma-lite:document`, 800 ms after the last change. On boot it is read back through the same defensive importer the file format uses. |
 | **What survives a refresh** | Every node, and only that. |
 | **What does not** | Undo history, selection, zoom and pan, active tool. Restoring an undo stack that no longer matches what you remember doing is worse than starting clean. |
-| **The durable path** | Export JSON (`⌘S`) writes a real file; import or drag one back in. `localStorage` holds roughly 5 MB, and pasted images are inlined as base64 `data:` URLs, so a photo-heavy document can exhaust it — when that happens the editor says so and points at the export rather than failing quietly. |
+| **Capacity** | IndexedDB is disk-backed — typically a large fraction of free space, versus localStorage's hard ~5 MB origin cap. Since images are inlined as base64 `data:` URLs (+33%), two pasted screenshots would have exceeded the old cap on their own. |
+| **Cost per save** | Only the nodes that changed are written. `diffDocuments` — the same reference comparison the undo system is built on — yields the changed set, so autosaving a 5,000-node document costs the same as a 5-node one. localStorage could not use that information: it can only replace the whole value, so every save re-serialised everything on the main thread. |
+| **Visibility** | The document chip in the toolbar opens a storage panel: real usage from `navigator.storage.estimate()`, every saved design with its size, and delete / clear-all. Browser storage is invisible by default; this app does not get to quietly hold your disk. |
 
 Clearing site data returns you to the starter scene. Both behaviours are covered
 by the end-to-end suite.
@@ -207,7 +226,7 @@ shortcut table itself, so a shortcut cannot exist without being documented.
 
 ## Testing
 
-121 tests, run with Node's built-in runner against the TypeScript sources
+183 tests, run with Node's built-in runner against the TypeScript sources
 directly (no build step):
 
 | file | covers |
@@ -219,11 +238,13 @@ directly (no build step):
 | `serialize.test.ts` | round trips, and hostile input: cycles, dangling refs, garbage |
 | `hittest.test.ts` | rotated shapes, clipping, scoping, SAT marquee |
 | `snapping.test.ts` | edge/centre snapping, zoom-relative tolerance |
+| `storage.test.ts` | incremental write plans, size accounting, the v1→v2 schema upgrade, backend fallbacks |
 
 `test/e2e.mjs` drives the production build in headless Chromium: it asserts the
-app boots with no console errors, that the canvas actually paints pixels, and
-that draw / undo / redo / move / zoom / persistence round trips work through
-real input events. That layer earns its keep — it is what caught an invisible
+app boots with no console errors, that the canvas actually paints pixels, that
+draw / undo / redo / move / zoom / persistence round trips work through real
+input events, and that exports are valid files — down to walking the PDF's
+cross-reference table and checking every offset lands on a real object. That layer earns its keep — it is what caught an invisible
 modal backdrop swallowing every pointer event in the app, which no unit test
 could have seen.
 
@@ -240,7 +261,8 @@ The invariants worth knowing about, because everything else rests on them:
 
 ```
 src/
-  core/         types, document queries, commands, history, editor, viewport, serialize
+  core/         types, document queries, commands, history, editor, viewport, serialize, storage
+  export/       PNG/JPG raster export, hand-written vector PDF writer
   render/       scene renderer, overlay renderer, text layout, image cache
   interaction/  hit testing, snapping, gesture state machine, actions, shortcuts, clipboard
   ui/           toolbar, layers panel, properties panel, text editor, help, toasts

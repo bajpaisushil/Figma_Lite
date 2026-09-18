@@ -229,6 +229,93 @@ try {
     assert.deepEqual(consoleErrors, []);
   });
 
+  console.log("\nexport");
+
+  // Runs an export in the page and returns the first bytes plus the size, so
+  // the file format can be checked rather than just "a blob appeared".
+  const exportProbe = (format, opts = {}) =>
+    page.evaluate(
+      async ({ format, opts }) => {
+        const mod = window.debug.exportApi;
+        const result = await mod.runExport(window.editor.doc, window.editor.selection, {
+          format,
+          selectionOnly: false,
+          scale: 1,
+          documentName: "probe",
+          ...opts,
+        });
+        const buffer = new Uint8Array(await result.blob.arrayBuffer());
+        const head = String.fromCharCode(...buffer.slice(0, 8));
+        const tail = String.fromCharCode(...buffer.slice(-8));
+        const text = new TextDecoder("latin1").decode(buffer);
+        return { size: buffer.length, head, tail, text, filename: result.filename };
+      },
+      { format, opts },
+    );
+
+  await check("PNG export produces a real PNG", async () => {
+    const png = await exportProbe("png", { scale: 2 });
+    assert.ok(png.size > 1000, `non-trivial file (${png.size} bytes)`);
+    // \x89PNG\r\n\x1a\n
+    assert.equal(png.head.charCodeAt(0), 0x89);
+    assert.equal(png.head.slice(1, 4), "PNG");
+    assert.ok(png.filename.endsWith(".png"), png.filename);
+  });
+
+  await check("JPG export produces a real JPEG", async () => {
+    const jpg = await exportProbe("jpeg");
+    assert.equal(jpg.head.charCodeAt(0), 0xff);
+    assert.equal(jpg.head.charCodeAt(1), 0xd8, "SOI marker");
+    assert.ok(jpg.filename.endsWith(".jpg"), jpg.filename);
+  });
+
+  await check("PDF export is a structurally valid vector PDF", async () => {
+    const pdf = await exportProbe("pdf");
+    assert.ok(pdf.head.startsWith("%PDF-"), `header: ${JSON.stringify(pdf.head)}`);
+    assert.ok(pdf.tail.includes("%%EOF"), `trailer: ${JSON.stringify(pdf.tail)}`);
+
+    for (const marker of ["/Type /Catalog", "/Type /Pages", "/Type /Page", "xref", "trailer", "startxref"]) {
+      assert.ok(pdf.text.includes(marker), `missing ${marker}`);
+    }
+    // Vector, not a wrapped bitmap: real path and text operators must appear.
+    assert.ok(/\bre\b/.test(pdf.text) || /\bc\b/.test(pdf.text), "path operators present");
+    assert.ok(pdf.text.includes("BT") && pdf.text.includes("Tj"), "text drawn as text");
+    assert.ok(pdf.text.includes("/BaseFont /Helvetica"), "a standard font is referenced");
+    assert.ok(pdf.size < 200_000, `vector output stays small (${pdf.size} bytes)`);
+  });
+
+  await check("the PDF cross-reference offsets point at real objects", async () => {
+    const pdf = await exportProbe("pdf");
+    // Every xref entry must land on "<n> 0 obj" — the check a reader performs.
+    // Match the table's own header, not the "xref" inside the later "startxref".
+    const xrefAt = pdf.text.lastIndexOf("\nxref\n");
+    assert.ok(xrefAt > 0, "the cross-reference table exists");
+    const table = pdf.text.slice(xrefAt);
+    const entries = [...table.matchAll(/^(\d{10}) 00000 n $/gm)].map((m) => Number(m[1]));
+    assert.ok(entries.length >= 4, `found ${entries.length} objects`);
+    for (const [index, offset] of entries.entries()) {
+      const at = pdf.text.slice(offset, offset + 20);
+      assert.ok(/^\d+ 0 obj/.test(at), `object ${index + 1} at ${offset}: ${JSON.stringify(at)}`);
+    }
+  });
+
+  await check("selection-only export crops to the selection", async () => {
+    await page.evaluate(() => {
+      const first = window.editor.doc.nodes[window.editor.doc.root].children[0];
+      window.editor.setSelection([first]);
+    });
+    await page.waitForTimeout(150);
+
+    const sizes = await page.evaluate(async () => {
+      const api = window.debug.exportApi;
+      const all = api.resolveTarget(window.editor.doc, window.editor.selection, false);
+      const one = api.resolveTarget(window.editor.doc, window.editor.selection, true);
+      return { all: all.bounds.w * all.bounds.h, one: one.bounds.w * one.bounds.h };
+    });
+    assert.ok(sizes.one < sizes.all, `selection area ${sizes.one} < page area ${sizes.all}`);
+    await page.keyboard.press("Escape");
+  });
+
   console.log("\npersistence");
   await check("edits survive a page refresh via autosave", async () => {
     // Draw something recognisable, wait past the autosave debounce, reload.

@@ -29,6 +29,8 @@ import { Toolbar } from "./ui/toolbar.ts";
 import { Toasts } from "./ui/toast.ts";
 import { HelpSheet } from "./ui/help.ts";
 import { LibraryPanel } from "./ui/library.ts";
+import { ExportPanel } from "./ui/exportPanel.ts";
+import { download, resolveTarget, runExport } from "./export/index.ts";
 import { TextEditor } from "./ui/textEditor.ts";
 import { el } from "./ui/dom.ts";
 import { sampleDocument } from "./sample.ts";
@@ -42,6 +44,7 @@ async function boot(): Promise<void> {
   // either scheduled after that point or guards on null.
   let library: DocumentLibrary | null = null;
   let activeId: string | null = null;
+  let currentName = "Untitled";
 
   // --- DOM scaffold ---------------------------------------------------------
   const sceneCanvas = el("canvas", { class: "scene-canvas" });
@@ -103,6 +106,12 @@ async function boot(): Promise<void> {
     clearAll: () => void clearLibrary(),
   });
 
+  const exportPanel = new ExportPanel({
+    hasSelection: () => editor.selection.length > 0,
+    preview: (selectionOnly) => resolveTarget(editor.doc, editor.selection, selectionOnly)?.bounds ?? null,
+    run: (request) => void doExport(request),
+  });
+
   const layers = new LayersPanel(editor, engine);
   const properties = new PropertiesPanel(editor, context);
   const toolbar = new Toolbar(
@@ -121,6 +130,7 @@ async function boot(): Promise<void> {
       toasts.root,
       help.root,
       libraryPanel.root,
+      exportPanel.root,
       fileInput,
       imageInput,
     ]),
@@ -267,6 +277,10 @@ async function boot(): Promise<void> {
   // --- Keyboard -------------------------------------------------------------
 
   window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && exportPanel.isOpen) {
+      exportPanel.hide();
+      return;
+    }
     if (event.key === "Escape" && libraryPanel.isOpen) {
       libraryPanel.hide();
       return;
@@ -317,14 +331,20 @@ async function boot(): Promise<void> {
   // --- Files: import, export, drop, paste -----------------------------------
 
   function exportDocument(): void {
-    const blob = new Blob([toJSON(editor.doc)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = el("a", { href: url, download: "figma-lite-document.json" });
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
-    toasts.show("Exported JSON");
+    exportPanel.show();
+  }
+
+  async function doExport(request: Parameters<typeof runExport>[2] | Omit<Parameters<typeof runExport>[2], "documentName">): Promise<void> {
+    try {
+      const result = await runExport(editor.doc, editor.selection, {
+        ...(request as Omit<Parameters<typeof runExport>[2], "documentName">),
+        documentName: currentName,
+      });
+      download(result);
+      toasts.show(`Exported ${result.filename}`);
+    } catch (error) {
+      toasts.show((error as Error).message || "Export failed", "warn", 5000);
+    }
   }
 
   function loadText(text: string): void {
@@ -511,7 +531,8 @@ async function boot(): Promise<void> {
   async function syncDocumentName(): Promise<void> {
     if (!library || !activeId) return;
     const summary = (await library.list()).find((d) => d.id === activeId);
-    toolbar.setDocumentName(summary?.name ?? "Untitled");
+    currentName = summary?.name ?? "Untitled";
+    toolbar.setDocumentName(currentName);
   }
 
   // --- Start ----------------------------------------------------------------
@@ -561,6 +582,7 @@ async function boot(): Promise<void> {
       toJSON: () => toJSON(editor.doc),
       storageKind: () => library?.kind ?? null,
       commands: { insertNode },
+      exportApi: { runExport, resolveTarget },
       estimate: () => library?.estimate() ?? null,
       listDocuments: () => library?.list() ?? Promise.resolve([]),
       activeDocumentId: () => activeId,
