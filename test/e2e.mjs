@@ -229,6 +229,185 @@ try {
     assert.deepEqual(consoleErrors, []);
   });
 
+  console.log("\nmanipulation");
+
+  // Picks a top-level unrotated node and returns its id plus the screen
+  // position of a chosen corner, so handle drags can be aimed precisely.
+  const pickNode = async () => {
+    const picked = await page.evaluate(() => {
+      // Earlier checks pan and zoom, which can push handles off-canvas. Reset
+      // the view first so the drag targets below are actually reachable.
+      window.editor.zoomToFit();
+      const doc = window.editor.doc;
+      const candidates = doc.nodes[doc.root].children
+        .map((c) => doc.nodes[c])
+        .filter((n) => n && n.rotation === 0 && n.w > 40 && n.h > 40);
+      const n = candidates.sort((a, b) => b.w * b.h - a.w * a.h)[0];
+      window.editor.setSelection([n.id]);
+      return {
+        id: n.id,
+        w: n.w,
+        h: n.h,
+        se: window.editor.toScreen({ x: n.x + n.w, y: n.y + n.h }),
+        ne: window.editor.toScreen({ x: n.x + n.w, y: n.y }),
+        viewport: { w: window.editor.viewport.width, h: window.editor.viewport.height },
+      };
+    });
+
+    // Fail loudly rather than silently dragging empty space, which is exactly
+    // how the first version of this test passed while doing nothing.
+    const inside = (p) =>
+      p.x > 4 && p.y > 4 && p.x < picked.viewport.w - 4 && p.y < picked.viewport.h - 4;
+    assert.ok(inside(picked.se), `SE handle is on canvas: ${JSON.stringify(picked.se)}`);
+    assert.ok(inside(picked.ne), `NE handle is on canvas: ${JSON.stringify(picked.ne)}`);
+    await page.waitForTimeout(150);
+    return picked;
+  };
+
+  await check("dragging a corner handle resizes, in one undo step", async () => {
+    const before = await pickNode();
+    const depth = await page.evaluate(() => window.editor.history.depth);
+
+    await page.mouse.move(box.x + before.se.x, box.y + before.se.y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + before.se.x + 70, box.y + before.se.y + 50, { steps: 12 });
+    await page.mouse.up();
+    await page.waitForTimeout(250);
+
+    const after = await page.evaluate((id) => {
+      const n = window.editor.doc.nodes[id];
+      return { w: n.w, h: n.h, x: n.x, y: n.y };
+    }, before.id);
+
+    assert.ok(after.w > before.w + 30, `width grew (${before.w} -> ${after.w})`);
+    assert.ok(after.h > before.h + 20, `height grew (${before.h} -> ${after.h})`);
+    assert.equal(
+      await page.evaluate(() => window.editor.history.depth),
+      depth + 1,
+      "the whole resize is one undo entry",
+    );
+  });
+
+  await check("resize pins the opposite corner", async () => {
+    const before = await pickNode();
+    const origin = await page.evaluate((id) => {
+      const n = window.editor.doc.nodes[id];
+      return { x: n.x, y: n.y };
+    }, before.id);
+
+    await page.mouse.move(box.x + before.se.x, box.y + before.se.y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + before.se.x + 60, box.y + before.se.y + 40, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(250);
+
+    const after = await page.evaluate((id) => {
+      const n = window.editor.doc.nodes[id];
+      return { x: n.x, y: n.y, w: n.w };
+    }, before.id);
+    assert.ok(after.w > before.w + 20, `the drag actually resized (${before.w} -> ${after.w})`);
+    assert.ok(Math.abs(after.x - origin.x) < 0.5, `top-left x held (${origin.x} -> ${after.x})`);
+    assert.ok(Math.abs(after.y - origin.y) < 0.5, `top-left y held (${origin.y} -> ${after.y})`);
+  });
+
+  await check("dragging outside a corner rotates", async () => {
+    const before = await pickNode();
+
+    // The rotation hot-zone sits just beyond the corner handle.
+    const start = { x: box.x + before.ne.x + 14, y: box.y + before.ne.y - 14 };
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(start.x + 60, start.y + 90, { steps: 14 });
+    await page.mouse.up();
+    await page.waitForTimeout(250);
+
+    const rotation = await page.evaluate((id) => window.editor.doc.nodes[id].rotation, before.id);
+    assert.ok(Math.abs(rotation) > 0.05, `rotation changed (${rotation} rad)`);
+  });
+
+  await check("grouping reparents the selection and ungrouping restores it", async () => {
+    const ids = await page.evaluate(() => {
+      const doc = window.editor.doc;
+      const picked = doc.nodes[doc.root].children.slice(0, 2);
+      window.editor.setSelection(picked);
+      return picked;
+    });
+    await page.waitForTimeout(150);
+
+    await page.keyboard.press("Control+g");
+    await page.waitForTimeout(250);
+
+    const grouped = await page.evaluate((ids) => {
+      const doc = window.editor.doc;
+      const parents = ids.map((id) => doc.nodes[id].parent);
+      return { parents, selection: window.editor.selection, type: doc.nodes[window.editor.selection[0]]?.type };
+    }, ids);
+
+    assert.equal(grouped.type, "group", "a group is selected");
+    assert.equal(grouped.parents[0], grouped.selection[0], "both members were reparented");
+    assert.equal(grouped.parents[1], grouped.selection[0]);
+
+    await page.keyboard.press("Control+Shift+g");
+    await page.waitForTimeout(250);
+    const after = await page.evaluate(
+      (ids) => ids.map((id) => window.editor.doc.nodes[id].parent),
+      ids,
+    );
+    assert.deepEqual(after, ["root", "root"], "ungrouping returned them to the page");
+  });
+
+  await check("the align buttons line the selection up", async () => {
+    await page.evaluate(() => {
+      const doc = window.editor.doc;
+      window.editor.setSelection(doc.nodes[doc.root].children.slice(0, 2));
+    });
+    await page.waitForTimeout(200);
+
+    await page.locator('button[aria-label="Align left"]').click();
+    await page.waitForTimeout(250);
+
+    const lefts = await page.evaluate(() =>
+      window.editor.selection.map((id) => {
+        const b = window.debug.deepWorldBounds(window.editor.doc, id);
+        return Math.round(b.x);
+      }),
+    );
+    assert.equal(new Set(lefts).size, 1, `left edges agree: ${lefts.join(", ")}`);
+  });
+
+  await check("copy and paste adds a detached duplicate", async () => {
+    const before = await page.evaluate(() => {
+      const doc = window.editor.doc;
+      window.editor.setSelection([doc.nodes[doc.root].children[0]]);
+      return Object.keys(doc.nodes).length;
+    });
+    await page.waitForTimeout(150);
+
+    await page.keyboard.press("Control+c");
+    await page.waitForTimeout(250);
+    await page.keyboard.press("Control+v");
+    await page.waitForTimeout(400);
+
+    const after = await page.evaluate(() => ({
+      count: Object.keys(window.editor.doc.nodes).length,
+      selection: window.editor.selection.length,
+    }));
+    assert.ok(after.count > before, `node count grew (${before} -> ${after.count})`);
+    assert.ok(after.selection > 0, "the pasted copy is selected");
+  });
+
+  await check("undo unwinds the whole session cleanly", async () => {
+    // Every gesture above should be individually undoable without error.
+    const depth = await page.evaluate(() => window.editor.history.depth);
+    assert.ok(depth >= 5, `expected several undo entries, saw ${depth}`);
+
+    for (let i = 0; i < depth; i++) await page.keyboard.press("Control+z");
+    await page.waitForTimeout(500);
+
+    assert.equal(await page.evaluate(() => window.editor.history.canUndo), false, "stack emptied");
+    assert.deepEqual(consoleErrors, [], "no errors while unwinding");
+  });
+
   console.log("\nexport");
 
   // Runs an export in the page and returns the first bytes plus the size, so

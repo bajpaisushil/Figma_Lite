@@ -12,7 +12,7 @@ npm install
 npm run dev        # http://localhost:5173
 npm test           # 158 unit tests, straight against the TS sources
 npm run check      # typecheck + unit tests + production build
-npm run test:e2e   # 25 checks driving a real browser (needs `npx playwright install chromium`)
+npm run test:e2e   # 32 checks driving a real browser (needs `npx playwright install chromium`)
 ```
 
 ---
@@ -180,6 +180,8 @@ crosses tabs), a library of saved designs, autosave.
 **Export** — PNG and JPG at 1–4×, whole page or selection only; JSON to reopen
 here; and PDF.
 
+![The export panel](docs/export.png)
+
 ### PDF is real vectors
 
 The PDF writer is hand-rolled (`src/export/pdf.ts`, no dependency). Shapes
@@ -193,6 +195,8 @@ glyphs under that flip would be upside down, so each text run re-flips via its
 text matrix. Known limits: fonts are the standard 14, so custom families are
 substituted, and embedded images are re-encoded to JPEG, so transparency
 composites onto white.
+
+![The storage panel](docs/storage.png)
 
 ### How persistence works
 

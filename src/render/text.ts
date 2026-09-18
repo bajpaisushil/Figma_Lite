@@ -65,8 +65,3 @@ export function layoutText(ctx: CanvasRenderingContext2D, node: TextNode): TextL
   cache.set(key, layout);
   return layout;
 }
-
-/** Natural height of the laid-out text, used by "resize to fit". */
-export function measuredHeight(layout: TextLayout): number {
-  return layout.lines.length * layout.lineHeight;
-}

@@ -116,11 +116,3 @@ function toBlob(canvas: HTMLCanvasElement, format: RasterFormat, quality: number
     );
   });
 }
-
-/** Bounds covering the given nodes, or the whole page, with a little padding. */
-export function exportBounds(rect: Rect | null, padding = 0): Rect {
-  if (!rect || rect.w <= 0 || rect.h <= 0) return { x: 0, y: 0, w: 1, h: 1 };
-  return { x: rect.x - padding, y: rect.y - padding, w: rect.w + padding * 2, h: rect.h + padding * 2 };
-}
-
-export type { NodeId };

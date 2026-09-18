@@ -117,11 +117,3 @@ export function download(result: ExportResult): void {
   // Revoking immediately can cancel the download in some browsers.
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
-
-/** Rough output size, shown in the panel before committing to an export. */
-export function describeOutput(bounds: Rect | null, format: ExportFormat, scale: number): string {
-  if (format === "json") return "Editable document";
-  if (!bounds) return "Nothing to export";
-  if (format === "pdf") return `${Math.round(bounds.w)} × ${Math.round(bounds.h)} pt · vector`;
-  return `${Math.round(bounds.w * scale)} × ${Math.round(bounds.h * scale)} px`;
-}
