@@ -37,44 +37,38 @@ export async function exportRaster(doc: Document, options: RasterOptions): Promi
 
   if (bounds.w <= 0 || bounds.h <= 0) throw new Error("Nothing to export");
 
-  // Clamp rather than fail: a slightly smaller image beats no image.
+  // Clamp rather than fail: a slightly smaller image beats no image. The clamp
+  // is applied to the *actual* output resolution, which is bounds x scale.
   const scale = Math.min(requested, MAX_DIMENSION / bounds.w, MAX_DIMENSION / bounds.h);
-  const width = Math.max(1, Math.round(bounds.w * scale));
-  const height = Math.max(1, Math.round(bounds.h * scale));
 
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas 2D is unavailable");
 
-  canvas.width = width;
-  canvas.height = height;
-
-  const background = options.background ?? (format === "jpeg" ? "#ffffff" : undefined);
-  if (background) {
-    ctx.fillStyle = background;
-    ctx.fillRect(0, 0, width, height);
-  }
-
-  // The renderer applies its own device-pixel-ratio scaling on resize, so drive
-  // it through a viewport rather than transforming the context by hand.
   const renderer = new SceneRenderer(canvas, () => undefined);
   await waitForImages(doc, renderer);
 
-  renderer.resize(width / scale, height / scale);
-  // `resize` clears the canvas, so paint the background after it.
-  if (background) {
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = background;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.restore();
-  }
+  // Drive the output resolution through the renderer's own pixel-ratio path;
+  // sizing the canvas by hand here would just be overwritten by resize().
+  renderer.resize(bounds.w, bounds.h, scale);
 
   renderer.render(
     doc,
     { panX: -bounds.x, panY: -bounds.y, zoom: 1, width: bounds.w, height: bounds.h },
     options.ids,
   );
+
+  // render() begins with clearRect over the whole canvas, so the background has
+  // to go on afterwards — underneath what was drawn.
+  const background = options.background ?? (format === "jpeg" ? "#ffffff" : undefined);
+  if (background) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = "destination-over";
+    ctx.fillStyle = background;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+  }
 
   return toBlob(canvas, format, options.quality ?? 0.92);
 }

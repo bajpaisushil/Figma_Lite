@@ -21,7 +21,7 @@
 
 import type { Document, NodeId, SceneNode, TextNode } from "../core/types.ts";
 import { isContainer } from "../core/types.ts";
-import { localTransform } from "../core/document.ts";
+import { localTransform, worldTransform } from "../core/document.ts";
 import type { Rect } from "../core/math.ts";
 import { layoutText } from "../render/text.ts";
 import { ByteBuilder, dataUrlToBytes } from "./bytes.ts";
@@ -101,15 +101,35 @@ class PdfBuilder {
   }
 }
 
-/** Escapes a string for a PDF literal and drops what WinAnsi cannot carry. */
+/**
+ * WinAnsi's 0x80-0x9F block holds the typographic punctuation Latin-1 lacks, so
+ * curly quotes and dashes survive instead of becoming question marks.
+ */
+const WIN_ANSI: Record<number, number> = {
+  0x20ac: 0x80, 0x201a: 0x82, 0x0192: 0x83, 0x201e: 0x84, 0x2026: 0x85,
+  0x2020: 0x86, 0x2021: 0x87, 0x02c6: 0x88, 0x2030: 0x89, 0x0160: 0x8a,
+  0x2039: 0x8b, 0x0152: 0x8c, 0x017d: 0x8e, 0x2018: 0x91, 0x2019: 0x92,
+  0x201c: 0x93, 0x201d: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97,
+  0x02dc: 0x98, 0x2122: 0x99, 0x0161: 0x9a, 0x203a: 0x9b, 0x0153: 0x9c,
+  0x017e: 0x9e, 0x0178: 0x9f,
+};
+
+/** Escapes a string for a PDF literal and maps it into WinAnsi. */
 function pdfString(value: string): string {
   let out = "";
   for (const char of value) {
     const code = char.codePointAt(0)!;
-    if (char === "(" || char === ")" || char === "\\") out += `\\${char}`;
-    else if (code < 32) out += " ";
-    else if (code > 255) out += "?"; // Outside WinAnsi without an embedded font.
-    else out += char;
+    if (char === "(" || char === ")" || char === "\\") {
+      out += `\\${char}`;
+    } else if (code < 32) {
+      out += " ";
+    } else if (code <= 255) {
+      out += char;
+    } else if (WIN_ANSI[code] !== undefined) {
+      out += String.fromCharCode(WIN_ANSI[code]!);
+    } else {
+      out += "?"; // Genuinely unrepresentable without an embedded font.
+    }
   }
   return out;
 }
@@ -132,6 +152,21 @@ function roundedRect(ops: string[], w: number, h: number, radius: number): void 
   ops.push(`0 ${num(r)} l`);
   ops.push(`0 ${num(r - k)} ${num(r - k)} 0 ${num(r)} 0 c`);
   ops.push("h");
+}
+
+/** Maps CSS object-fit onto a destination rectangle inside the node's box. */
+function fitBox(
+  fit: "fill" | "contain" | "cover",
+  iw: number,
+  ih: number,
+  bw: number,
+  bh: number,
+): { x: number; y: number; w: number; h: number } {
+  if (fit === "fill" || iw <= 0 || ih <= 0) return { x: 0, y: 0, w: bw, h: bh };
+  const scale = fit === "cover" ? Math.max(bw / iw, bh / ih) : Math.min(bw / iw, bh / ih);
+  const w = iw * scale;
+  const h = ih * scale;
+  return { x: (bw - w) / 2, y: (bh - h) / 2, w, h };
 }
 
 function ellipsePath(ops: string[], w: number, h: number): void {
@@ -342,9 +377,19 @@ export async function exportPdf(doc: Document, options: PdfExportOptions): Promi
             roundedRect(ops, node.w, node.h, node.radius);
             ops.push("W n");
           }
-          // The unit image square is mapped into the node box, flipped back so
-          // the picture is not upside down under the page flip.
-          ops.push(`${num(node.w)} 0 0 ${num(-node.h)} 0 ${num(node.h)} cm`);
+          // PDF always draws an image into the unit square, so object-fit is
+          // expressed by the placement matrix: "contain" shrinks and centres,
+          // "cover" overflows and relies on the clip below.
+          const box = fitBox(node.fit, embedded.width, embedded.height, node.w, node.h);
+          if (node.fit === "cover" && node.radius <= 0) {
+            // Cover overflows the box, so it needs a clip even without a radius.
+            ops.push(`0 0 ${num(node.w)} ${num(node.h)} re`);
+            ops.push("W n");
+          }
+          // The vertical flip undoes the page flip, so the picture is upright.
+          ops.push(
+            `${num(box.w)} 0 0 ${num(-box.h)} ${num(box.x)} ${num(box.y + box.h)} cm`,
+          );
           ops.push(`/Im${embedded.id} Do`);
           ops.push("Q");
         } else {
@@ -372,7 +417,24 @@ export async function exportPdf(doc: Document, options: PdfExportOptions): Promi
     ops.push("Q");
   };
 
-  for (const id of ids) emit(id, 1);
+  for (const id of ids) {
+    const node = doc.nodes[id];
+    if (!node) continue;
+    // `emit` lays a node out in its *parent's* space. A selected node that is
+    // not a direct child of the page therefore needs its ancestors' transform
+    // established first, or it lands somewhere else entirely — usually outside
+    // the MediaBox, giving a blank page.
+    const parentId = node.parent;
+    if (parentId && parentId !== doc.root) {
+      const pw = worldTransform(doc, parentId);
+      ops.push("q");
+      ops.push(`${num(pw.a)} ${num(pw.b)} ${num(pw.c)} ${num(pw.d)} ${num(pw.e)} ${num(pw.f)} cm`);
+      emit(id, 1);
+      ops.push("Q");
+    } else {
+      emit(id, 1);
+    }
+  }
 
   // --- Assemble -------------------------------------------------------------
 

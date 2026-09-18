@@ -116,9 +116,29 @@ export function deserialize(input: unknown): ImportResult {
   }
 
   // Pass 3: anything unclaimed becomes a top-level node.
+  //
+  // The stored root record carries the real paint order, and it must win. The
+  // root node itself is synthesised rather than imported (so a malformed file
+  // cannot replace it), but discarding its `children` too would rebuild
+  // top-level z-order from whatever order the records happened to arrive in —
+  // which for IndexedDB is lexicographic by node id. That silently reshuffled
+  // every top-level layer on load.
+  const rawRoot = isRecord(rawNodes[ROOT_ID]) ? (rawNodes[ROOT_ID] as Record<string, unknown>) : null;
+  const declaredOrder = Array.isArray(rawRoot?.children)
+    ? (rawRoot.children as unknown[]).filter((c): c is string => typeof c === "string")
+    : [];
+
   const rootChildren: NodeId[] = [];
+  const placed = new Set<NodeId>();
+  for (const id of declaredOrder) {
+    // A node another container legitimately claimed stays where it is.
+    if (!clean.has(id) || claimed.has(id) || placed.has(id)) continue;
+    rootChildren.push(id);
+    placed.add(id);
+  }
+  // Anything the root did not list (or a file that omitted the root) still lands.
   for (const [id] of clean) {
-    if (!claimed.has(id)) rootChildren.push(id);
+    if (!claimed.has(id) && !placed.has(id)) rootChildren.push(id);
   }
 
   // Pass 4: break cycles. A node reachable from itself would hang every

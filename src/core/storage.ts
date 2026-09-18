@@ -229,6 +229,14 @@ export function openDatabase(factory: IDBFactory, name = DB_NAME): Promise<IDBDa
           { key: string; value: NodeId } | undefined
         >;
 
+        // Without a handler the request error aborts the versionchange
+        // transaction, the upgrade never commits, and every later load falls
+        // back to localStorage. Losing the legacy document is better than that.
+        all.onerror = () => {
+          if (db.objectStoreNames.contains(LEGACY_NODE_STORE)) {
+            db.deleteObjectStore(LEGACY_NODE_STORE);
+          }
+        };
         all.onsuccess = () => {
           const records = all.result ?? [];
           if (records.length > 0) {
@@ -259,7 +267,13 @@ export function openDatabase(factory: IDBFactory, name = DB_NAME): Promise<IDBDa
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      // Without this, this tab's open connection blocks a newer tab's upgrade
+      // forever, and that tab silently degrades to localStorage.
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     request.onerror = () => reject(request.error ?? new Error("Could not open IndexedDB"));
     // Another tab holding an older version open would block the upgrade
     // indefinitely; failing fast lets the caller fall back instead of hanging.
@@ -325,25 +339,23 @@ class IndexedDbLibrary implements DocumentLibrary {
   }
 
   private async write(id: string, doc: Document, name?: string): Promise<void> {
-    const base = this.bases.get(id) ?? null;
+    // Read the summary in its own transaction first. Another tab may have
+    // deleted this design since our diff base was captured — writing a diff
+    // against a document that no longer exists would recreate it as a partial,
+    // corrupt one whose summary describes nodes that were never written.
+    const existing = await this.readSummary(id);
+    const base = existing ? (this.bases.get(id) ?? null) : null;
+    if (!existing) this.bases.delete(id);
+
     const plan = planWrite(doc, base?.doc ?? null);
     const nothingToDo = !plan.full && plan.put.length === 0 && plan.remove.length === 0;
     if (nothingToDo && !name) return;
 
-    const tx = this.db.transaction([NODE_STORE, DOC_STORE], "readwrite");
-    const nodes = tx.objectStore(NODE_STORE);
-    const docs = tx.objectStore(DOC_STORE);
-
-    if (plan.full) {
-      nodes.delete(documentRange(id));
-    }
-    for (const node of plan.put) nodes.put({ ...node, docId: id });
-    for (const nodeId of plan.remove) nodes.delete([id, nodeId]);
-
-    const sizes = base ? base.sizes : new Map<NodeId, number>();
+    // Work on a copy: `applyPlanToSizes` mutates, and a write that aborts must
+    // leave the base exactly as it was so the retry recomputes the full delta.
+    const sizes = new Map(base ? base.sizes : []);
     const total = applyPlanToSizes(plan, sizes, base?.total ?? 0);
 
-    const existing = (await promisify(docs.get(id))) as DocumentSummary | undefined;
     const now = Date.now();
     const summary: DocumentSummary = {
       id,
@@ -353,23 +365,30 @@ class IndexedDbLibrary implements DocumentLibrary {
       nodeCount: Object.keys(doc.nodes).length,
       bytes: total,
     };
-    docs.put(summary);
+
+    const tx = this.db.transaction([NODE_STORE, DOC_STORE], "readwrite");
+    const nodes = tx.objectStore(NODE_STORE);
+    if (plan.full) nodes.delete(documentRange(id));
+    for (const node of plan.put) nodes.put({ ...node, docId: id });
+    for (const nodeId of plan.remove) nodes.delete([id, nodeId]);
+    tx.objectStore(DOC_STORE).put(summary);
 
     await transactionDone(tx);
-    // Only advance the base after the transaction commits, so a failed write is
-    // retried in full rather than silently skipped by the next diff.
+    // Only adopt the new base after the transaction commits.
     this.bases.set(id, { doc, sizes, total });
+  }
+
+  private async readSummary(id: string): Promise<DocumentSummary | undefined> {
+    const tx = this.db.transaction(DOC_STORE, "readonly");
+    const row = (await promisify(tx.objectStore(DOC_STORE).get(id))) as DocumentSummary | undefined;
+    await transactionDone(tx);
+    return row;
   }
 
   async create(name: string, doc: Document): Promise<DocumentSummary> {
     const id = newDocumentId();
     await this.save(id, doc, name);
-    const summary = await this.enqueue(async () => {
-      const tx = this.db.transaction(DOC_STORE, "readonly");
-      const row = (await promisify(tx.objectStore(DOC_STORE).get(id))) as DocumentSummary | undefined;
-      await transactionDone(tx);
-      return row;
-    });
+    const summary = await this.enqueue(() => this.readSummary(id));
     if (!summary) throw new Error("Could not create document");
     return summary;
   }

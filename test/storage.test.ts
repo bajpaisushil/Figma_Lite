@@ -187,6 +187,42 @@ describe("IndexedDbLibrary", () => {
     assert.deepEqual(childIds(loaded, "f"), ["c"]);
   });
 
+  test("top-level paint order survives save and load", async () => {
+    const lib = await open();
+    // IndexedDB returns records in key order, which here is "a", "m", "z" —
+    // deliberately different from the document's paint order.
+    const doc = build([{ id: "z" }, { id: "a" }, { id: "m" }]);
+    const summary = await lib.create("ordered", doc);
+
+    const loaded = (await (await open()).load(summary.id))!;
+    assert.deepEqual(childIds(loaded, loaded.root), ["z", "a", "m"]);
+  });
+
+  test("a stale diff base cannot write a truncated document", async () => {
+    const lib = await open();
+    const doc = build([{ id: "a" }, { id: "b" }, { id: "c" }]);
+    const summary = await lib.create("d", doc);
+
+    // Another tab deletes the design while this connection still holds a base.
+    const otherTab = await open();
+    await otherTab.remove(summary.id);
+
+    // Saving a one-node change must not leave a document whose summary claims
+    // four nodes while only one was actually written.
+    await lib.save(summary.id, updateNodes(doc, { a: { x: 5 } }));
+
+    const listed = (await (await open()).list()).find((d) => d.id === summary.id);
+    if (listed) {
+      const reloaded = (await (await open()).load(summary.id))!;
+      assert.equal(
+        Object.keys(reloaded.nodes).length,
+        listed.nodeCount,
+        "the summary and the stored nodes agree",
+      );
+      assert.ok(reloaded.nodes.b && reloaded.nodes.c, "no nodes were lost");
+    }
+  });
+
   test("documents are isolated — deleting one leaves the others intact", async () => {
     const lib = await open();
     const a = await lib.create("A", build([{ id: "na" }]));

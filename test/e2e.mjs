@@ -478,6 +478,100 @@ try {
     }
   });
 
+  await check("the requested export scale reaches the pixels", async () => {
+    // The renderer sizes its backing store by device pixel ratio; export has to
+    // override that or 2x silently produces a 1x image.
+    const dims = await page.evaluate(async () => {
+      const api = window.debug.exportApi;
+      const measure = async (scale) => {
+        const r = await api.runExport(window.editor.doc, [], {
+          format: "png",
+          selectionOnly: false,
+          scale,
+          documentName: "scale",
+        });
+        const bitmap = await createImageBitmap(r.blob);
+        const size = { w: bitmap.width, h: bitmap.height };
+        bitmap.close();
+        return size;
+      };
+      return { one: await measure(1), two: await measure(2) };
+    });
+
+    assert.ok(Math.abs(dims.two.w - dims.one.w * 2) <= 2, `2x width (${dims.one.w} -> ${dims.two.w})`);
+    assert.ok(Math.abs(dims.two.h - dims.one.h * 2) <= 2, `2x height (${dims.one.h} -> ${dims.two.h})`);
+  });
+
+  await check("JPEG export has a white background, not a black one", async () => {
+    // JPEG has no alpha, so a transparent canvas encodes as black. The
+    // background must be composited under the artwork after render() clears.
+    const corner = await page.evaluate(async () => {
+      const api = window.debug.exportApi;
+      const r = await api.runExport(window.editor.doc, [], {
+        format: "jpeg",
+        selectionOnly: false,
+        scale: 1,
+        documentName: "bg",
+      });
+      const bitmap = await createImageBitmap(r.blob);
+      const canvas = document.createElement("canvas");
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      // The very corner is padding, so it is pure background.
+      const [r0, g0, b0] = ctx.getImageData(1, 1, 1, 1).data;
+      return { r: r0, g: g0, b: b0 };
+    });
+    assert.ok(
+      corner.r > 200 && corner.g > 200 && corner.b > 200,
+      `corner is light, got rgb(${corner.r}, ${corner.g}, ${corner.b})`,
+    );
+  });
+
+  await check("a nested selection exports to a PDF that is not blank", async () => {
+    // emit() lays a node out in its parent's space, so a node inside a frame
+    // needs its ancestors' transform established or it falls outside the page.
+    const result = await page.evaluate(async () => {
+      const doc = window.editor.doc;
+      // Find any node whose parent is not the page itself.
+      const nested = Object.values(doc.nodes).find(
+        (n) => n.parent && n.parent !== doc.root && n.type !== "group",
+      );
+      if (!nested) return { skipped: true };
+      window.editor.setSelection([nested.id]);
+
+      const api = window.debug.exportApi;
+      const r = await api.runExport(doc, [nested.id], {
+        format: "pdf",
+        selectionOnly: true,
+        scale: 1,
+        documentName: "nested",
+      });
+      const text = new TextDecoder("latin1").decode(new Uint8Array(await r.blob.arrayBuffer()));
+      const stream = text.slice(text.indexOf("stream"), text.indexOf("endstream"));
+      const box = /MediaBox \[0 0 ([\d.]+) ([\d.]+)\]/.exec(text);
+      return {
+        skipped: false,
+        drawOps: (stream.match(/\b(re|c|Do|Tj)\b/g) || []).length,
+        page: box ? { w: Number(box[1]), h: Number(box[2]) } : null,
+        stream,
+      };
+    });
+
+    if (result.skipped) return;
+    assert.ok(result.page && result.page.w > 1 && result.page.h > 1, "the page has real dimensions");
+    assert.ok(result.drawOps > 0, `the content stream draws something (${result.drawOps} ops)`);
+
+    // Every coordinate the stream paints at should be within reach of the page,
+    // which is what the missing ancestor transform broke.
+    const numbers = (result.stream.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+    const wild = numbers.filter((n) => Math.abs(n) > Math.max(result.page.w, result.page.h) * 6);
+    assert.equal(wild.length, 0, `no runaway coordinates (saw ${wild.slice(0, 4).join(", ")})`);
+    await page.keyboard.press("Escape");
+  });
+
   await check("selection-only export crops to the selection", async () => {
     await page.evaluate(() => {
       const first = window.editor.doc.nodes[window.editor.doc.root].children[0];

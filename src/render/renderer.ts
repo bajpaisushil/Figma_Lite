@@ -44,9 +44,13 @@ export class SceneRenderer {
     this.images = new ImageCache(onImageLoad);
   }
 
-  /** Sizes the backing store for the device pixel ratio. Call on resize only. */
-  resize(width: number, height: number): void {
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+  /**
+   * Sizes the backing store. `pixelRatio` defaults to the device's, capped at 2
+   * for on-screen use; export passes its own scale so the output resolution is
+   * what was asked for rather than whatever display the browser happens to be on.
+   */
+  resize(width: number, height: number, pixelRatio?: number): void {
+    this.dpr = pixelRatio ?? Math.min(window.devicePixelRatio || 1, 2);
     this.canvas.width = Math.max(1, Math.round(width * this.dpr));
     this.canvas.height = Math.max(1, Math.round(height * this.dpr));
     this.canvas.style.width = `${width}px`;

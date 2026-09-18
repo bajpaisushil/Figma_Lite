@@ -36,6 +36,29 @@ describe("round trip", () => {
     assert.equal((fields(restored, "a").fill as { color: string }).color, "#ff0000");
   });
 
+  test("top-level paint order survives a round trip", () => {
+    // Ids chosen so that lexicographic order ("a", "m", "z") differs from paint
+    // order ("z", "a", "m"). Rebuilding the root's children from record order
+    // instead of the stored order silently reshuffled every top-level layer.
+    const doc = build([{ id: "z" }, { id: "a" }, { id: "m" }]);
+    assert.deepEqual(childIds(doc, doc.root), ["z", "a", "m"]);
+
+    const { doc: restored } = fromJSON(toJSON(doc));
+    assert.deepEqual(childIds(restored, restored.root), ["z", "a", "m"]);
+  });
+
+  test("a node the root lists but another container claims stays claimed", () => {
+    const { doc } = deserialize({
+      nodes: {
+        root: { type: "frame", children: ["f", "shared"] },
+        f: { type: "frame", children: ["shared"] },
+        shared: { type: "rect" },
+      },
+    });
+    assert.deepEqual(childIds(doc, "f"), ["shared"]);
+    assert.deepEqual(childIds(doc, doc.root), ["f"]);
+  });
+
   test("the full sample document round-trips", () => {
     const doc = sampleDocument();
     const { doc: restored } = fromJSON(toJSON(doc));

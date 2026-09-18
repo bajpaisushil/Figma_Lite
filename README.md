@@ -10,9 +10,9 @@ dependencies.
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm test           # 158 unit tests, straight against the TS sources
+npm test           # 162 unit tests, straight against the TS sources
 npm run check      # typecheck + unit tests + production build
-npm run test:e2e   # 32 checks driving a real browser (needs `npx playwright install chromium`)
+npm run test:e2e   # 35 checks driving a real browser (needs `npx playwright install chromium`)
 ```
 
 ---
@@ -230,7 +230,7 @@ shortcut table itself, so a shortcut cannot exist without being documented.
 
 ## Testing
 
-158 tests, run with Node's built-in runner against the TypeScript sources
+162 tests, run with Node's built-in runner against the TypeScript sources
 directly (no build step):
 
 | file | covers |
