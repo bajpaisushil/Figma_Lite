@@ -59,11 +59,18 @@ try {
   });
   page.on("pageerror", (error) => consoleErrors.push(`pageerror: ${error.message}`));
 
+  const ready = () => page.waitForFunction(() => Boolean(window.editor), null, { timeout: 15000 });
+
   await page.goto(URL, { waitUntil: "networkidle" });
-  // The editor starts with a fresh document; clear any autosave from a prior run.
-  await page.evaluate(() => localStorage.clear());
+  await ready();
+  // Start from a clean slate: both the IndexedDB stores and the legacy key.
+  await page.evaluate(async () => {
+    localStorage.clear();
+    await window.debug.clearStorage();
+  });
   await page.reload({ waitUntil: "networkidle" });
-  await page.waitForTimeout(400);
+  await ready();
+  await page.waitForTimeout(300);
 
   console.log("\nboot");
   await check("no console or page errors on load", () => {
@@ -74,6 +81,10 @@ try {
     for (const selector of [".toolbar", ".panel-left", ".panel-right", ".scene-canvas", ".overlay-canvas"]) {
       assert.ok(await page.locator(selector).count(), `missing ${selector}`);
     }
+  });
+
+  await check("the document is stored in IndexedDB, not localStorage", async () => {
+    assert.equal(await page.evaluate(() => window.debug.storageKind()), "indexeddb");
   });
 
   await check("the sample document populated the layers panel", async () => {
@@ -235,7 +246,8 @@ try {
     }));
 
     await page.reload({ waitUntil: "networkidle" });
-    await page.waitForTimeout(500);
+    await ready();
+    await page.waitForTimeout(300);
 
     const after = await page.evaluate(() => ({
       count: Object.keys(window.editor.doc.nodes).length,
@@ -248,9 +260,46 @@ try {
     assert.equal(after.historyDepth, 0, "history deliberately does not persist");
   });
 
-  await check("clearing storage falls back to the sample document", async () => {
-    await page.evaluate(() => localStorage.clear());
+  await check("a document larger than the old 5MB cap survives a refresh", async () => {
+    // The exact case that broke on localStorage: an inlined image. 6MB of
+    // base64 exceeds the old origin quota on its own.
+    await page.evaluate(() => {
+      const big = `data:image/png;base64,${"A".repeat(6 * 1024 * 1024)}`;
+      const { insertNode } = window.debug.commands;
+      window.editor.commit("Insert big image", (doc) =>
+        insertNode(doc, {
+          id: "bigimage",
+          type: "image",
+          name: "Big",
+          parent: null,
+          x: 0, y: 0, w: 100, h: 100,
+          rotation: 0, opacity: 1, visible: true, locked: false,
+          src: big, radius: 0, fit: "cover", strokeWidth: 0,
+        }),
+      );
+    });
+    await page.waitForTimeout(2000);
+
     await page.reload({ waitUntil: "networkidle" });
+    await ready();
+    await page.waitForTimeout(500);
+
+    const src = await page.evaluate(() => window.editor.doc.nodes.bigimage?.src?.length ?? 0);
+    assert.ok(src > 6_000_000, `the 6MB image came back (got ${src} chars)`);
+  });
+
+  await check("no quota warning was shown for that document", async () => {
+    const warned = await page.locator(".toast-warn").count();
+    assert.equal(warned, 0, "IndexedDB absorbed it without complaint");
+  });
+
+  await check("clearing storage falls back to the sample document", async () => {
+    await page.evaluate(async () => {
+      localStorage.clear();
+      await window.debug.clearStorage();
+    });
+    await page.reload({ waitUntil: "networkidle" });
+    await ready();
     await page.waitForTimeout(400);
     const count = await page.evaluate(() => Object.keys(window.editor.doc.nodes).length);
     assert.equal(count, 15, "the starter scene is back");

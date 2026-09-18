@@ -15,12 +15,14 @@ import "./styles.css";
 import { Editor } from "./core/editor.ts";
 import { deepWorldBounds } from "./core/document.ts";
 import { fromJSON, toJSON, ImportError } from "./core/serialize.ts";
+import { type DocumentStore, openDocumentStore } from "./core/storage.ts";
 import { SceneRenderer } from "./render/renderer.ts";
 import { OverlayRenderer } from "./render/overlay.ts";
 import { InteractionEngine } from "./interaction/tools.ts";
 import { type ActionContext } from "./interaction/actions.ts";
 import { dispatchShortcut, isTextEntryTarget } from "./interaction/shortcuts.ts";
 import { insertImageFile, paste } from "./interaction/clipboard.ts";
+import { insertNode } from "./core/commands.ts";
 import { LayersPanel } from "./ui/layers.ts";
 import { PropertiesPanel } from "./ui/properties.ts";
 import { Toolbar } from "./ui/toolbar.ts";
@@ -30,10 +32,14 @@ import { TextEditor } from "./ui/textEditor.ts";
 import { el } from "./ui/dom.ts";
 import { sampleDocument } from "./sample.ts";
 
-const AUTOSAVE_KEY = "figma-lite:document";
+/** How long after the last edit the document is written to storage. */
+const AUTOSAVE_DEBOUNCE_MS = 800;
 
-function boot(): void {
+async function boot(): Promise<void> {
   const editor = new Editor();
+  // Assigned once the async store is open; everything that touches it is
+  // either scheduled after that point or guards on null.
+  let store: DocumentStore | null = null;
 
   // --- DOM scaffold ---------------------------------------------------------
   const sceneCanvas = el("canvas", { class: "scene-canvas" });
@@ -151,6 +157,7 @@ function boot(): void {
       `${Math.round(editor.viewport.zoom * 100)}%`,
       count === 0 ? "no selection" : count === 1 ? "1 selected" : `${count} selected`,
       `${painted} painted · ${culled} culled · ${frameMs.toFixed(1)}ms`,
+      store ? STORE_LABEL[store.kind] : "storage…",
     ].join("   ·   ");
   }
 
@@ -363,49 +370,56 @@ function boot(): void {
 
   // --- Autosave -------------------------------------------------------------
 
-  // The document is written to localStorage 800ms after the last change, and
+  // The document is written to IndexedDB shortly after the last change, and
   // read back on boot. History, selection and viewport are deliberately not
   // persisted: restoring an undo stack that no longer matches what the user
   // remembers doing is worse than starting clean.
+  //
+  // The store writes only the nodes that changed since its last successful
+  // save, so autosaving during a 5,000-node document costs the same as during
+  // a 5-node one.
   let autosaveTimer: number | undefined;
   let autosaveWarned = false;
 
   function queueAutosave(): void {
+    if (!store) return;
     clearTimeout(autosaveTimer);
     autosaveTimer = setTimeout(() => {
-      try {
-        localStorage.setItem(AUTOSAVE_KEY, toJSON(editor.doc, false));
-        autosaveWarned = false;
-      } catch {
-        // Usually the ~5MB quota, blown by base64 images. Silently dropping the
-        // save would let someone work for an hour and lose it on refresh, so say
-        // so once and point at the export that does not have a size limit.
-        if (!autosaveWarned) {
+      void store?.save(editor.doc).then(
+        () => {
+          autosaveWarned = false;
+        },
+        () => {
+          // Quota exhaustion or a storage failure. Dropping this silently would
+          // let someone work for an hour and lose it on refresh, so say so once
+          // and point at the export, which has no size limit.
+          if (autosaveWarned) return;
           autosaveWarned = true;
-          toasts.show("Autosave is full — export to JSON to keep this work", "warn", 6000);
-        }
-      }
-    }, 800) as unknown as number;
+          toasts.show("Could not autosave — export to JSON to keep this work", "warn", 6000);
+        },
+      );
+    }, AUTOSAVE_DEBOUNCE_MS) as unknown as number;
   }
 
   // --- Start ----------------------------------------------------------------
 
-  const saved = (() => {
-    try {
-      return localStorage.getItem(AUTOSAVE_KEY);
-    } catch {
-      return null;
-    }
-  })();
+  // The shell is already on screen; the document arrives a frame later. Opening
+  // the store is async, which is the one real cost of leaving localStorage —
+  // and it buys a quota measured in gigabytes instead of five megabytes.
+  const opened = await openDocumentStore();
+  store = opened.store;
 
-  if (saved) {
-    try {
-      editor.load(fromJSON(saved).doc);
-    } catch {
-      editor.load(sampleDocument());
-    }
-  } else {
-    editor.load(sampleDocument());
+  let restored: Awaited<ReturnType<DocumentStore["load"]>> = null;
+  try {
+    restored = await store.load();
+  } catch {
+    restored = null;
+  }
+
+  editor.load(restored ?? sampleDocument());
+  if (opened.migrated) toasts.show("Moved your saved work into IndexedDB");
+  if (store.kind !== "indexeddb") {
+    toasts.show("IndexedDB unavailable — autosave is limited", "warn", 5000);
   }
 
   resize();
@@ -419,8 +433,21 @@ function boot(): void {
   Object.assign(window as unknown as Record<string, unknown>, {
     editor,
     engine,
-    debug: { deepWorldBounds, toJSON: () => toJSON(editor.doc) },
+    debug: {
+      deepWorldBounds,
+      toJSON: () => toJSON(editor.doc),
+      storageKind: () => store?.kind ?? null,
+      commands: { insertNode },
+      estimate: () => store?.estimate() ?? null,
+      clearStorage: () => store?.clear(),
+    },
   });
 }
 
-boot();
+const STORE_LABEL: Record<string, string> = {
+  indexeddb: "IndexedDB",
+  localstorage: "localStorage",
+  memory: "memory only",
+};
+
+void boot();
