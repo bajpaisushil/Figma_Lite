@@ -51,6 +51,14 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute must always win. Any author `display` rule (such as the
+   `display: grid` on .modal-backdrop) otherwise beats the UA stylesheet's
+   `[hidden] { display: none }`, leaving an invisible element still laid out and
+   still intercepting pointer events. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   height: 100%;
@@ -112,8 +120,9 @@ button {
 
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 18px;
+  gap: 10px 18px;
   padding: 10px 14px;
   background: linear-gradient(180deg, #ffffff 0%, #fdfcff 100%);
   border-radius: var(--radius-xl);
@@ -168,6 +177,10 @@ button {
 .toolbar-right {
   margin-left: auto;
   display: flex;
+  /* Wraps as well as the toolbar itself: the clusters together are wider than a
+     phone viewport, and an unwrappable flex item would force the page wider. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: 8px;
 }
@@ -673,10 +686,17 @@ button {
 }
 
 .field-affix {
+  display: grid;
+  place-items: center;
   font-size: 11px;
   font-weight: 700;
   color: var(--ink-faint);
   min-width: 14px;
+}
+
+.field-affix .icon {
+  width: 14px;
+  height: 14px;
 }
 
 .num-input,
@@ -1054,6 +1074,13 @@ button {
   }
   .panel {
     display: none;
+  }
+  .brand,
+  .zoom-cluster .ghost-button {
+    display: none;
+  }
+  .toolbar-right {
+    margin-left: 0;
   }
 }
 

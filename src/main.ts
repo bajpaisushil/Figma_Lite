@@ -363,14 +363,27 @@ function boot(): void {
 
   // --- Autosave -------------------------------------------------------------
 
+  // The document is written to localStorage 800ms after the last change, and
+  // read back on boot. History, selection and viewport are deliberately not
+  // persisted: restoring an undo stack that no longer matches what the user
+  // remembers doing is worse than starting clean.
   let autosaveTimer: number | undefined;
+  let autosaveWarned = false;
+
   function queueAutosave(): void {
     clearTimeout(autosaveTimer);
     autosaveTimer = setTimeout(() => {
       try {
         localStorage.setItem(AUTOSAVE_KEY, toJSON(editor.doc, false));
+        autosaveWarned = false;
       } catch {
-        // Quota exceeded (large embedded images) — not worth interrupting for.
+        // Usually the ~5MB quota, blown by base64 images. Silently dropping the
+        // save would let someone work for an hour and lose it on refresh, so say
+        // so once and point at the export that does not have a size limit.
+        if (!autosaveWarned) {
+          autosaveWarned = true;
+          toasts.show("Autosave is full — export to JSON to keep this work", "warn", 6000);
+        }
       }
     }, 800) as unknown as number;
   }

@@ -410,7 +410,7 @@ export class InteractionEngine {
     const sdy = this.modifiers.shift && dy === 0 ? 0 : snap.dy;
 
     this.guides = snap.guides;
-    this.badge = `${round(moved.x + sdx)}, ${round(moved.y + sdy)}`;
+    this.badge = `${Math.round(moved.x + sdx)}, ${Math.round(moved.y + sdy)}`;
     editor.live(() => translateNodes(g.startDoc, g.ids, dx + sdx, dy + sdy));
     this.host.onOverlayChange();
   }

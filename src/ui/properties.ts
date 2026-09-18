@@ -83,7 +83,9 @@ export class PropertiesPanel {
       if (!getter) continue;
       const value = shared(nodes, getter);
       if (input.type === "color") {
-        input.value = typeof value === "string" ? value : "#000000";
+        // Matches the first-render fallback; without this an unset paint would
+        // flip the swatch to black on the next refresh.
+        input.value = typeof value === "string" ? value : "#ffffff";
       } else {
         input.value = value === null || value === undefined ? "" : String(value);
         input.placeholder = value === null ? "Mixed" : "";
@@ -111,14 +113,16 @@ export class PropertiesPanel {
     };
 
     return this.section("Align", [
+      // Row one is the horizontal axis, row two the vertical, each ending in
+      // its own distribute — so the grid reads as two axes, not eight buttons.
       el("div", { class: "align-grid" }, [
         button(ICONS.alignLeft, "Align left", () => A.align(ctx(), "left")),
         button(ICONS.alignHCenter, "Align horizontal centres", () => A.align(ctx(), "hcenter")),
         button(ICONS.alignRight, "Align right", () => A.align(ctx(), "right")),
+        button(ICONS.distributeH, "Distribute horizontally", () => A.distribute(ctx(), "h"), count < 3),
         button(ICONS.alignTop, "Align top", () => A.align(ctx(), "top")),
         button(ICONS.alignVCenter, "Align vertical centres", () => A.align(ctx(), "vcenter")),
         button(ICONS.alignBottom, "Align bottom", () => A.align(ctx(), "bottom")),
-        button(ICONS.distributeH, "Distribute horizontally", () => A.distribute(ctx(), "h"), count < 3),
         button(ICONS.distributeV, "Distribute vertically", () => A.distribute(ctx(), "v"), count < 3),
       ]),
     ]);
@@ -131,8 +135,8 @@ export class PropertiesPanel {
         this.numberField("y", "Y", nodes),
         this.numberField("w", "W", nodes, { min: 1 }),
         this.numberField("h", "H", nodes, { min: 1 }),
-        this.numberField("rotation", "∠", nodes, { step: 1, suffix: "°" }),
-        this.numberField("radius", "⌜", nodes, { min: 0, disabled: !nodes.every(hasRadius) }),
+        this.numberField("rotation", "Rotation", nodes, { step: 1, iconPath: ICONS.rotate }),
+        this.numberField("radius", "Corner radius", nodes, { min: 0, iconPath: ICONS.radius, disabled: !nodes.every(hasRadius) }),
       ]),
     ]);
   }
@@ -231,7 +235,15 @@ export class PropertiesPanel {
     key: string,
     label: string,
     nodes: SceneNode[],
-    options: { min?: number; max?: number; step?: number; suffix?: string; disabled?: boolean; bare?: boolean } = {},
+    options: {
+      min?: number;
+      max?: number;
+      step?: number;
+      disabled?: boolean;
+      bare?: boolean;
+      /** Draws an icon instead of the text affix, for units a letter cannot carry. */
+      iconPath?: string;
+    } = {},
   ): HTMLElement {
     const getter = GETTERS[key];
     const value = getter ? shared(nodes, getter) : null;
@@ -265,10 +277,12 @@ export class PropertiesPanel {
     });
 
     if (options.bare) return input;
-    return el("label", { class: "field" }, [
-      el("span", { class: "field-affix", text: `${label}${options.suffix ?? ""}` }),
-      input,
-    ]);
+
+    const affix = el("span", { class: "field-affix", title: label });
+    if (options.iconPath) affix.append(icon(options.iconPath));
+    else affix.textContent = label;
+
+    return el("label", { class: "field", title: label }, [affix, input]);
   }
 
   private sliderField(key: string, nodes: SceneNode[]): HTMLElement {
