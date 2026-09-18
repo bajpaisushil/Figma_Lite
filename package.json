@@ -1,0 +1,20 @@
+{
+  "name": "figma-lite",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A miniature vector design editor: document model, command system, history, renderer, interaction engine.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "check": "npm run typecheck && npm test && vite build"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
